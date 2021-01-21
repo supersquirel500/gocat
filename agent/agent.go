@@ -31,7 +31,6 @@ type AgentInterface interface {
 	Terminate()
 	GetFullProfile() map[string]interface{}
 	GetTrimmedProfile() map[string]interface{}
-	SetCommunicationChannels(c2Config map[string]string) error
 	SetPaw(paw string)
 	Display()
 	DownloadPayloads(payloads []interface{}) []string
@@ -40,8 +39,12 @@ type AgentInterface interface {
 	TerminateLocalP2pReceivers()
 	HandleBeaconFailure() error
 	DiscoverPeers()
-	AttemptSelectComChannel(requestedChannelConfig map[string]string, requestedChannel string) error
+	AttemptSelectComChannel(requestedChannel string) error
 	GetCurrentContactName() string
+	UpdateSuccessfulContacts()
+	SetWatchdog(newVal int)
+	UpdateCheckinTime(checkin time.Time)
+	EvaluateWatchdog() bool
 }
 
 // Implements AgentInterface
@@ -62,11 +65,17 @@ type Agent struct {
 	paw string
 	initialDelay float64
 	originLinkID int
+	watchdog int
+	checkin time.Time
 
 	// Communication methods
 	beaconContact contact.Contact
 	heartbeatContact contact.Contact
 	failedBeaconCounter int
+	successfulContacts []map[string]interface{} // List of historically successful beacons
+	changingContacts bool // true if agent is trying a different C2 contact
+	successFulContactIndex int
+	c2Config map[string]string
 
 	// peer-to-peer info
 	enableLocalP2pReceivers bool
@@ -106,6 +115,16 @@ func (a *Agent) Initialize(server string, group string, c2Config map[string]stri
 	a.initialDelay = float64(initialDelay)
 	a.failedBeaconCounter = 0
 	a.originLinkID = originLinkID
+	a.successfulContacts = make([]map[string]interface{}, 0)
+	a.changingContacts = true
+	a.successFulContactIndex = 0
+	a.watchdog = 0
+
+	// Set up C2 config for agent
+	a.c2Config = make(map[string]string)
+	for key, val := range c2Config {
+		a.c2Config[key] = val
+	}
 
 	// Paw will get initialized after successful beacon if it's not specified via command line
 	if paw != "" {
@@ -122,7 +141,7 @@ func (a *Agent) Initialize(server string, group string, c2Config map[string]stri
 	a.DiscoverPeers()
 
 	// Set up contacts
-	if err = a.SetCommunicationChannels(c2Config); err != nil {
+	if err = a.SetInitialCommunicationChannel(); err != nil {
 		return err
 	}
 
@@ -139,12 +158,16 @@ func (a *Agent) Initialize(server string, group string, c2Config map[string]stri
 
 // Returns full profile for agent.
 func (a *Agent) GetFullProfile() map[string]interface{} {
+	contactName := "None"
+	if a.beaconContact != nil {
+		contactName = a.beaconContact.GetName()
+	}
 	return map[string]interface{}{
 		"paw": a.paw,
 		"server": a.server,
 		"group": a.group,
 		"host": a.host,
-		"contact": a.beaconContact.GetName(),
+		"contact": contactName,
 		"username": a.username,
 		"architecture": a.architecture,
 		"platform": a.platform,
@@ -212,7 +235,11 @@ func (a *Agent) HandleBeaconFailure() error {
 		// Reset counter and try switching proxy methods
 		a.failedBeaconCounter = 0
 		output.VerbosePrint("[!] Reached beacon failure threshold. Attempting to switch to new peer proxy method.")
-		return a.findAvailablePeerProxyClient()
+		if err := a.findAvailablePeerProxyClient(); err != nil {
+			output.VerbosePrint(fmt.Sprintf("[!] Error trying to connect to proxy peer: %v", err.Error()))
+			output.VerbosePrint("[*] Will retry previously successful contacts.")
+			return a.switchToPreviousSuccessfulContact()
+		}
 	}
 	return nil
 }
@@ -262,10 +289,10 @@ func (a *Agent) RunInstruction(instruction map[string]interface{}, payloads []st
 // are not met. If the original requested channel cannot be used and there are no compatible peer proxy receivers,
 // then an error will be returned.
 // This method does not test connectivity to the requested server or to proxy receivers.
-func (a *Agent) SetCommunicationChannels(requestedChannelConfig map[string]string) error {
+func (a *Agent) SetInitialCommunicationChannel() error {
 	if len(contact.CommunicationChannels) > 0 {
-		if requestedChannel, ok := requestedChannelConfig["c2Name"]; ok {
-			if err := a.AttemptSelectComChannel(requestedChannelConfig, requestedChannel); err == nil {
+		if requestedChannel, ok := a.c2Config["c2Name"]; ok {
+			if err := a.AttemptSelectComChannel(requestedChannel); err == nil {
 				return nil
 			}
 		}
@@ -277,21 +304,24 @@ func (a *Agent) SetCommunicationChannels(requestedChannelConfig map[string]strin
 }
 
 // Attempts to set a given communication channel for the agent.
-func (a *Agent) AttemptSelectComChannel(requestedChannelConfig map[string]string, requestedChannel string) error {
+func (a *Agent) AttemptSelectComChannel(requestedChannel string) error {
 	coms, ok := contact.CommunicationChannels[requestedChannel]
 	output.VerbosePrint(fmt.Sprintf("[*] Attempting to set channel %s", requestedChannel))
 	if !ok {
 		return errors.New(fmt.Sprintf("%s channel not available", requestedChannel))
 	}
-	a.updateUpstreamComs(coms)
-	valid, config := coms.C2RequirementsMet(a.GetFullProfile(), requestedChannelConfig)
+	oldChannel := a.c2Config["c2Name"]
+	a.c2Config["c2Name"] = requestedChannel
+	valid, config := coms.C2RequirementsMet(a.GetFullProfile(), a.c2Config)
 	if valid {
 		if config != nil {
 			a.modifyAgentConfiguration(config)
 		}
 		output.VerbosePrint(fmt.Sprintf("[*] Set communication channel to %s", requestedChannel))
+		a.updateUpstreamComs(coms)
 		return nil
 	}
+	a.c2Config["c2Name"] = oldChannel
 	return errors.New(fmt.Sprintf("%s channel available, but requirements not met.", requestedChannel))
 }
 
@@ -408,6 +438,7 @@ func (a *Agent) modifyAgentConfiguration(config map[string]string) {
 }
 
 func (a *Agent) updateUpstreamServer(newServer string) {
+	a.changingContacts = true
 	a.server = newServer
 	if a.localP2pReceivers != nil {
 		for _, receiver := range a.localP2pReceivers {
@@ -417,6 +448,7 @@ func (a *Agent) updateUpstreamServer(newServer string) {
 }
 
 func (a *Agent) updateUpstreamComs(newComs contact.Contact) {
+	a.changingContacts = true
 	a.beaconContact = newComs
 	a.heartbeatContact = newComs
 	if a.localP2pReceivers != nil {
@@ -480,4 +512,65 @@ func (a *Agent) GetCurrentContactName() string {
 		return currContact.GetName()
 	}
 	return ""
+}
+
+func (a *Agent) UpdateSuccessfulContacts() {
+	// Only check if agent was in the process of switching contacts
+	if a.changingContacts {
+		currProtocol := a.beaconContact.GetName()
+		currAddress := a.server
+		for _, contactInfo := range a.successfulContacts {
+			if currProtocol == contactInfo["protocol"].(string) && currAddress == contactInfo["address"].(string) {
+				// We have already used this contact before.
+				return
+			}
+		}
+
+		// Add contact to list
+		info := map[string]interface{}{
+			"protocol": currProtocol,
+			"address": currAddress,
+			"p2p": a.usingPeerReceivers,
+		}
+		a.successfulContacts = append(a.successfulContacts, info)
+		output.VerbosePrint(fmt.Sprintf("[*] Added contact to historical list of successful contacts: %s via %s. Using p2p: %v", currAddress, currProtocol, a.usingPeerReceivers))
+		a.changingContacts = false
+	}
+}
+
+func (a *Agent) switchToPreviousSuccessfulContact() error {
+	numSuccessfulContacts := len(a.successfulContacts)
+	if numSuccessfulContacts == 0 {
+		return errors.New("No previous successful contacts to try.")
+	}
+	toTry := a.successfulContacts[a.successFulContactIndex]
+	protocol := toTry["protocol"].(string)
+	address := toTry["address"].(string)
+	usingP2p := toTry["p2p"].(bool)
+	a.successFulContactIndex = (a.successFulContactIndex + 1) % numSuccessfulContacts
+	output.VerbosePrint(fmt.Sprintf("[*] Will attempt to switch to previously successful contact %s via %s, Using p2p: %v", address, protocol, usingP2p))
+	if err := a.AttemptSelectComChannel(protocol); err != nil {
+		return err
+	} else {
+		a.updateUpstreamServer(address)
+		a.usingPeerReceivers = usingP2p
+	}
+	return nil
+}
+
+func (a *Agent) SetWatchdog(newVal int) {
+	if newVal <= 0 {
+		a.watchdog = 0
+	} else {
+		a.watchdog = newVal
+	}
+}
+
+func (a *Agent) UpdateCheckinTime(checkin time.Time) {
+	a.checkin = checkin
+}
+
+// Returns true if agent should keep running, false if not.
+func (a *Agent) EvaluateWatchdog() bool {
+	return a.watchdog <= 0 || float64(time.Now().Sub(a.checkin).Seconds()) <= float64(a.watchdog)
 }

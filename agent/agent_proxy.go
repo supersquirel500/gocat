@@ -43,20 +43,19 @@ func (a *Agent) storeLocalP2pReceiverAddresses(receiverName string, p2pReceiver 
 // Sets the first valid one it can find. Returns an error if no valid proxy clients are found.
 func (a *Agent) findAvailablePeerProxyClient() error {
 	if len(a.availablePeerReceivers) == 0 {
-		// Either we used all available peers, or we simply never had any to start with. Refresh
-		// the used peers if possible.
+		// Either we used all available peers, or we simply never had any to start with.
 		if len(a.exhaustedPeerReceivers) == 0 {
 			return errors.New("No peer proxy receivers available to connect to.")
 		}
-		output.VerbosePrint("[*] All available peer proxy receivers have been tried. Retrying them.")
 		a.refreshAvailablePeerReceivers()
+		return errors.New("All available peer proxy receivers have been tried.")
 	}
 	for proxyChannel, receiverAddresses := range a.availablePeerReceivers {
 		if len(receiverAddresses) > 0 {
 			output.VerbosePrint(fmt.Sprintf("[-] Verifying proxy channel %s", proxyChannel))
 
 			// Attempt to set the new coms channel.
-			if err := a.AttemptSelectComChannel(nil, proxyChannel); err != nil {
+			if err := a.AttemptSelectComChannel(proxyChannel); err != nil {
 				output.VerbosePrint(fmt.Sprintf("[!] Error attempting to use proxy channel %s: %s", proxyChannel, err.Error()))
 
 				// Remove the invalid proxy channel from the pool. Safe to remove during iteration.
@@ -96,10 +95,11 @@ func (a *Agent) markPeerReceiverAsUsed(proxyChannel string, usedAddress string) 
 
 // Should only be called once the agent's availablePeerReceivers map is empty.
 // Will repopulate availablePeerReceivers with the exhausted peer receivers so that the agent
-// can try them again.
+// can try them again. Will also look for new peers to add to the list.
 func (a *Agent) refreshAvailablePeerReceivers() {
 	a.availablePeerReceivers = a.exhaustedPeerReceivers
 	a.exhaustedPeerReceivers = make(map[string][]string)
+	a.DiscoverPeers()
 }
 
 // Utility function to remove a given string from a string slice.
