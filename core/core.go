@@ -28,11 +28,11 @@ func Core(server string, group string, delay int, c2 map[string]string, p2pRecei
 	if err != nil {
 		output.VerbosePrint(fmt.Sprintf("[-] Error when initializing agent: %s", err.Error()))
 		output.VerbosePrint("[-] Exiting.")
-	} else {
-		sandcatAgent.Display()
-		runAgent(sandcatAgent)
-		sandcatAgent.Terminate()
+		return
 	}
+	sandcatAgent.Display()
+	runAgent(sandcatAgent)
+	sandcatAgent.Terminate()
 }
 
 // Establish contact with C2 and run instructions.
@@ -83,7 +83,7 @@ func processBeaconResponse(sandcatAgent *agent.Agent, beacon map[string]interfac
 
 func changeAgentContact(sandcatAgent *agent.Agent, newChannel string) {
 	output.VerbosePrint(fmt.Sprintf("Received request to switch from C2 channel %s to %s", sandcatAgent.GetCurrentContactName(), newChannel))
-	if err := sandcatAgent.AttemptSelectComChannel(newChannel); err != nil {
+	if err := sandcatAgent.SwitchC2Contact(newChannel, ""); err != nil {
 		output.VerbosePrint(fmt.Sprintf("[!] Error switching communication channels: %s", err.Error()))
 	}
 }
