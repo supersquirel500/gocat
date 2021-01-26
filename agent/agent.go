@@ -38,7 +38,7 @@ type AgentInterface interface {
 	CheckAndSetCommsChannel(server string, c2Protocol string, c2Key string) error
 	GetCurrentContact() contact.Contact
 	GetCurrentContactName() string
-	UpdateSuccessfulContacts()
+	MarkCurrCommsAsSuccessful()
 	SetWatchdog(newVal int)
 	UpdateCheckinTime(checkin time.Time)
 	EvaluateWatchdog() bool
@@ -119,6 +119,9 @@ func (a *Agent) Initialize(server string, group string, c2Config map[string]stri
 	if paw != "" {
 		a.paw = paw
 	}
+
+	// Debugging
+	output.VerbosePrint(fmt.Sprintf("Default agent C2 key : %s", a.getC2Key()))
 
 	// Load peer proxy receiver information
 	a.exhaustedPeerReceivers = make(map[string][]string)
@@ -217,23 +220,6 @@ func (a *Agent) processBeacon(data []byte) map[string]interface{} {
 		}
 	}
 	return beacon
-}
-
-// If too many consecutive failures occur for the current communication method, switch to a new proxy method.
-// Return an error if switch fails.
-func (a *Agent) HandleBeaconFailure() error {
-	a.failedBeaconCounter += 1
-	if a.failedBeaconCounter >= beaconFailureThreshold {
-		// Reset counter and try switching proxy methods
-		a.failedBeaconCounter = 0
-		output.VerbosePrint("[!] Reached beacon failure threshold. Attempting to switch to new peer proxy method.")
-		if err := a.switchToFirstAvailablePeerProxyClient(); err != nil {
-			output.VerbosePrint(fmt.Sprintf("[!] Error trying to connect to proxy peer: %v", err.Error()))
-			output.VerbosePrint("[*] Will retry previously successful comms channel.")
-			return a.switchToPreviousSuccessfulCommsChannel()
-		}
-	}
-	return nil
 }
 
 func (a *Agent) Terminate() {

@@ -58,7 +58,7 @@ func processBeaconResponse(sandcatAgent *agent.Agent, beacon map[string]interfac
 		sandcatAgent.SetPaw(beacon["paw"].(string))
 		sandcatAgent.UpdateCheckinTime(time.Now())
 		sandcatAgent.SetWatchdog(beacon["watchdog"].(int))
-		sandcatAgent.UpdateSuccessfulContacts()
+		sandcatAgent.MarkCurrCommsAsSuccessful()
 	} else {
 		// Failed beacon
 		if err := sandcatAgent.HandleBeaconFailure(); err != nil {

@@ -57,7 +57,7 @@ func (a *Agent) switchToFirstAvailablePeerProxyClient() error {
 	for proxyChannel, receiverAddresses := range a.availablePeerReceivers {
 		for i := len(receiverAddresses) - 1; i >= 0; i-- {
 			address := receiverAddresses[i]
-			if err := a.ValidateAndSetCommsChannel(address, proxyChannel, ""); err != nil {
+			if err := a.ValidateAndSetCommsChannel(address, proxyChannel, a.getC2Key()); err != nil {
 				output.VerbosePrint(fmt.Sprintf("[!] Error attempting to use proxy contact %s with address %s: %s", proxyChannel, address, err.Error()))
 
 				// Remove the invalid proxy channel/address pair from the pool.
